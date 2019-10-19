@@ -11,6 +11,9 @@ const byte SWITCH_PIN = 0;           // Pin to control the light with
 const char *ID = "Example_Switch";  // Name of our device, must be unique
 const char *TOPIC = "room/light";  // Topic to subcribe to
 
+String player;
+volatile bool registration_complete = false;
+
 //IPAddress broker(10,0,0,17); // IP address of your MQTT broker eg. 192.168.1.50
 WiFiClient wclient;
 
@@ -422,6 +425,24 @@ state_type process_offline_state( void )
   
 }
 
+// Handle incomming messages from the broker
+void mqtt_callback(char* topic, byte* payload, unsigned int length) 
+{
+  //String response;
+
+  for (int i = 0; i < length; i++) {
+    player += (char)payload[i];
+  }
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  Serial.println(player);
+
+  registration_complete = true;
+
+  Serial.println("Registration Complete");
+}
+
 void init_looking_for_broker( void )
 { 
   Serial.print("Looking for broker: ");
@@ -430,10 +451,13 @@ void init_looking_for_broker( void )
   IPAddress broker(nv_data.broker_addr[0],nv_data.broker_addr[1],nv_data.broker_addr[2],nv_data.broker_addr[3]); 
   
   client.setServer(broker, 1883);
+  client.setCallback(mqtt_callback);
 }
 
 state_type process_looking_for_broker( void )
 {
+
+  
   if (!client.connected())
   {
      Serial.print("Attempting MQTT connection...");
@@ -441,6 +465,9 @@ state_type process_looking_for_broker( void )
     if (client.connect(nv_data.client_id)) 
     {
       Serial.println("connected");
+
+      init_registering_with_game();
+
       return STATE_REGISTERING_WITH_GAME;
     } 
     else 
@@ -453,26 +480,33 @@ state_type process_looking_for_broker( void )
   }
 }
 
-// Reconnect to client...UNUSED
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect(ID)) {
-      Serial.println("connected");
-      Serial.print("Publishing to: ");
-      Serial.println(TOPIC);
-      Serial.println('\n');
-
-    } else {
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
-  }
+void init_registering_with_game( void )
+{
+    char subscribe_str[30]="register/";
+        
+    strcat(subscribe_str, nv_data.client_id);
+    Serial.print("Subscribing to ");
+    Serial.println(subscribe_str);  
+    client.subscribe(subscribe_str);
+    
+    client.publish("register/request", nv_data.client_id);
+  
+    Serial.print("Registering client ");
+    Serial.println(nv_data.client_id);
 }
 
+state_type process_registering_with_game( void )
+{
+  if (registration_complete) 
+  {
+    Serial.println("Registration Complete!!!");
+    return STATE_ACTIVE;
+  }
+  else
+  {
+    return STATE_REGISTERING_WITH_GAME;
+  }
+}
 
 void setup() 
 {
@@ -490,17 +524,6 @@ void setup()
  
   Serial.println("Init complete");
 
-  //delay(100);
-  //init_disconnect_state();
-
-  /*
-  configure_wifi();
-  pinMode(SWITCH_PIN,INPUT);  // Configure SWITCH_Pin as an input
-  digitalWrite(SWITCH_PIN,HIGH);  // enable pull-up resistor (active low)
-  delay(100);
-  //setup_wifi(); // Connect to network
-  client.setServer(broker, 1883);
-  */
 }
 
 void loop()
@@ -539,11 +562,25 @@ void loop()
     break;
 
     case STATE_REGISTERING_WITH_GAME:
-      Serial.println("You WIN!!!");
-      delay(5000);
+      // We're expecting an MQTT callback with a "registration/response" topic.  
+      // That callback will set the registration_complete flag.
+      
+      client.loop();
+      
+      if (Serial.available())
+      {
+        Serial.println("Going to offline state....");
+        current_state = STATE_OFFLINE;
+      }
+      else
+      {
+        current_state = process_registering_with_game();
+      }
     break;
 
     case STATE_ACTIVE:
+       Serial.println("ACTIVE!!!");
+       delay(5000);
     break;
 
     default:
