@@ -11,13 +11,19 @@ const byte SWITCH_PIN = 0;           // Pin to control the light with
 const char *ID = "Example_Switch";  // Name of our device, must be unique
 const char *TOPIC = "room/light";  // Topic to subcribe to
 
-IPAddress broker(10,0,0,17); // IP address of your MQTT broker eg. 192.168.1.50
+//IPAddress broker(10,0,0,17); // IP address of your MQTT broker eg. 192.168.1.50
 WiFiClient wclient;
 
 PubSubClient client(wclient); // Setup MQTT client
 
+#define SSID_SIZE     40
+#define PASSWORD_SIZE 20
+
 typedef struct 
 {
+  char ssid[SSID_SIZE];
+  char password[PASSWORD_SIZE];
+  
   // PubSubClient needs broker address as 4 integers seperated by commas 
   // (example:  10,0,0,7 instead of 10.0.0.7)
   //  Thus, I'm gonna store them as 4 bytes.  
@@ -119,6 +125,18 @@ void serial_read_string( char *str, int max_chars )
   }
 }
 
+
+void print_broker_addr( void )
+{
+  int i;
+
+  for (i=0;i<4;i++)
+  {
+    Serial.print(nv_data.broker_addr[i]);
+    Serial.print(".");
+  }
+  Serial.println();
+}
 
 #define BROKER_STR_SIZE 16
 void configure_broker( void )
@@ -244,78 +262,96 @@ void configure_client_id( void )
 
 }
 
+
+void configure_ssid( void )
+{ 
+  Serial.println("Enter SSID");
+  
+  serial_read_string(nv_data.ssid, SSID_SIZE);
+
+  Serial.print("Set SSID to ");
+  Serial.println(nv_data.ssid);
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+
+}
+
+
+void configure_pasword( void )
+{ 
+  Serial.println("Enter password");
+  
+  serial_read_string(nv_data.password, PASSWORD_SIZE);
+
+  Serial.print("Set password");
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+
+}
+
 #define BUF_SIZE 40
+#define TIMEOUT_TICK_COUNT 120
 void configure_wifi( void )
 {
   char ssid[BUF_SIZE];
   char pass[BUF_SIZE];
   char *curr_char = ssid;
+  int timeout_ticks;
 
+  // So this is kinda funky.  I'm cheating by connecting to the network inside of "configure_wifi" and using the 
+  // intrinsic 8266 functionality to store ssid and password.
+  // I'm gonnna disconnect at the end so that we always enter "disconnect" the same way.
+  
   // disconnect from any currently assigned networks.
-  WiFi.disconnect();
+  //WiFi.disconnect();
   
   Serial.println("Enter SSID");
 
-  // Build up the SSID string until we hit an Enter.
-  while (true)
-  {
-    if (Serial.available())
-    {
-      // Grab the next character
-      *curr_char = Serial.read();
-      if (*curr_char == '\n')
-      {
-        *curr_char = NULL;
-        break;
-      }
-      curr_char++;
-      // Need some buffer overflow checking here...
-    }
-  }
+  serial_read_string(ssid, BUF_SIZE);
   Serial.print("SSID=");
   Serial.println(ssid);
 
   Serial.println("Enter Password");
-  curr_char = pass;
+
+  serial_read_string(pass, BUF_SIZE);
   
-  // Build up the password string until we hit an Enter.
-  while (true)
-  {
-    if (Serial.available())
-    {
-      // Grab the next character
-      *curr_char = Serial.read();
-      if (*curr_char == '\n')
-      {
-        *curr_char = NULL;
-        break;
-      }
-      curr_char++;
-      // Need some buffer overflow checking here...
-    }
-  }
   Serial.print("Pass=");
   Serial.println(pass);
 
-  Serial.print("\nConnecting to network");
+  Serial.print("\nLooking for network");
   
   WiFi.begin(ssid, pass); // Connect to network
 
-  while (WiFi.status() != WL_CONNECTED) { // Wait for connection
-    delay(500);
+  // Keep looking until we either connect or timeout.
+  timeout_ticks = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (timeout_ticks < TIMEOUT_TICK_COUNT)) 
+  { // Wait for connection
+    delay(1000);
     Serial.print(".");
+    timeout_ticks++;
   }
 
-  Serial.println();
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED)
+  {
+     Serial.println("WiFi found");   
+  }
+  else
+  {
+    Serial.println("Couldn't connect to network");
+  }
+
+  // I'm putting this disconnect here...in the case we're connected, we'll disconnect (since we set this in offline)
+  // In the case we weren't able to connect, I think this stops the "WiFi.begin()" so we stop looking.
+  WiFi.disconnect();
+  
 }
 
 void init_disconnect_state( void )
 {
   Serial.print("\nConnecting to network");
-  WiFi.begin(); // Connect to network, using last stored credentials.
+  WiFi.begin(nv_data.ssid, nv_data.password); // Connect to network
 }
 
 state_type process_disconnect_state( void )
@@ -329,6 +365,7 @@ state_type process_disconnect_state( void )
     }
     else
     {
+      init_looking_for_broker();
       return STATE_LOOKING_FOR_BROKER;
     }
 }
@@ -336,10 +373,11 @@ state_type process_disconnect_state( void )
 void print_offline_menu( void )
 {
   Serial.println("Configuration:");
-  Serial.println("1....set WiFi SSID and password");
-  Serial.println("2....set MQTT Broker");
-  Serial.println("3....set MQTT Client Name");
-  Serial.println("4....exit offline mode");
+  Serial.println("1....set WiFi SSID");
+  Serial.println("2....set WiFi passwork");
+  Serial.println("3....set MQTT Broker");
+  Serial.println("4....set MQTT Client Name");
+  Serial.println("5....exit offline mode");
 }
 
 state_type process_offline_state( void )
@@ -350,24 +388,28 @@ state_type process_offline_state( void )
 
   input = serial_read_number();
 
-  Serial.print("Read a ");
-  Serial.println(input);
+  //Serial.print("Read a ");
+  //Serial.println(input);
 
     switch (input)
     {
       case 1:
-        configure_wifi();
+        configure_ssid();
       break;
 
       case 2:
+        configure_pasword();
+      break;
+      
+      case 3:
         configure_broker();
       break;
 
-      case 3:
+      case 4:
         configure_client_id();
       break;
 
-      case 4:
+      case 5:
         init_disconnect_state();
         return STATE_DISCONNECT;
         
@@ -380,26 +422,38 @@ state_type process_offline_state( void )
   
 }
 
-// Connect to WiFi network using stored credentials.
-void setup_wifi() 
-{
-  Serial.print("\nConnecting to network");
+void init_looking_for_broker( void )
+{ 
+  Serial.print("Looking for broker: ");
+  print_broker_addr();
   
-  //WiFi.begin(ssid, password); // Connect to network
-  WiFi.begin(); // Connect to network, using last stored credentials.
-
-  while (WiFi.status() != WL_CONNECTED) { // Wait for connection
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println();
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  IPAddress broker(nv_data.broker_addr[0],nv_data.broker_addr[1],nv_data.broker_addr[2],nv_data.broker_addr[3]); 
+  
+  client.setServer(broker, 1883);
 }
 
-// Reconnect to client
+state_type process_looking_for_broker( void )
+{
+  if (!client.connected())
+  {
+     Serial.print("Attempting MQTT connection...");
+
+    if (client.connect(nv_data.client_id)) 
+    {
+      Serial.println("connected");
+      return STATE_REGISTERING_WITH_GAME;
+    } 
+    else 
+    {
+      Serial.println(" try again in 2 seconds");
+      // Wait 2 seconds before retrying
+      delay(2000);
+      return STATE_LOOKING_FOR_BROKER;
+    }
+  }
+}
+
+// Reconnect to client...UNUSED
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
@@ -419,17 +473,6 @@ void reconnect() {
   }
 }
 
-void print_broker_addr( void )
-{
-  int i;
-
-  for (i=0;i<4;i++)
-  {
-    Serial.print(nv_data.broker_addr[i]);
-    Serial.print(".");
-  }
-  Serial.println();
-}
 
 void setup() 
 {
@@ -471,15 +514,33 @@ void loop()
     break;
     
     case STATE_DISCONNECT:
-      current_state = process_disconnect_state();
+      // any serial input will kick us to offline.
+      if (Serial.available())
+      {
+        Serial.println("Going to offline state...");
+        current_state = STATE_OFFLINE;
+      }
+      else
+      {
+        current_state = process_disconnect_state();
+      }
     break;
 
     case STATE_LOOKING_FOR_BROKER:
-      Serial.println("You WIN!!!!");
-      delay(5000);
+      if (Serial.available())
+      {
+        Serial.println("Going to offline state....");
+        current_state = STATE_OFFLINE;
+      }
+      else
+      {
+        current_state = process_looking_for_broker();
+      }
     break;
 
     case STATE_REGISTERING_WITH_GAME:
+      Serial.println("You WIN!!!");
+      delay(5000);
     break;
 
     case STATE_ACTIVE:
