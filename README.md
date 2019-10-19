@@ -21,3 +21,12 @@ With the MQTT handshake, we'll have the following states:
 4) "connected".  Monitor the joystick i2c, and send the appropriate "up/down/left/right" commands to our passed "player".
 
 Probably good to have a status LED so the joystick knows which state it's in.  Could do an RGB...red for (1), yellow for (2), blue for (3) and green for (4).
+
+## Joystick I2C specifics:
+I2C address = 0x20
+
+chip address 0x03 and 0x04 are horizontal position (MSB first)
+chip address 0x05 and 0x06 are vertical position (MSB first)
+
+The LSB really only has two bits...and in this application, we don't need them.
+For horizontal and vert, we go from 0x00 (left or top) to 0x7f (middle) to 0xff (right or bottom)
