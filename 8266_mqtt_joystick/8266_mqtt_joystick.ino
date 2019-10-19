@@ -5,6 +5,8 @@ MQTT joystick on 8266 thing.
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
+#include <EEPROM.h>
+
 const byte SWITCH_PIN = 0;           // Pin to control the light with
 const char *ID = "Example_Switch";  // Name of our device, must be unique
 const char *TOPIC = "room/light";  // Topic to subcribe to
@@ -14,61 +16,233 @@ WiFiClient wclient;
 
 PubSubClient client(wclient); // Setup MQTT client
 
+typedef struct 
+{
+  // PubSubClient needs broker address as 4 integers seperated by commas 
+  // (example:  10,0,0,7 instead of 10.0.0.7)
+  //  Thus, I'm gonna store them as 4 bytes.  
+  unsigned char broker_addr[4];
+
+  // I'm going to limit client ID to 20 characters
+  char client_id[21];
+} nv_data_type;
+
+nv_data_type nv_data;
 
 typedef enum
 {
-  STATE_DISCONNECT = 0,
+  STATE_OFFLINE = 0,
+  STATE_DISCONNECT,
   STATE_LOOKING_FOR_BROKER,
   STATE_REGISTERING_WITH_GAME,
   STATE_ACTIVE
 } state_type;
 
-void empty_serial_buffer( void )
+/*===============================================
+ * serial_read_number
+ * 
+ * Reads a number from the serial port.  Returns -1 if invalid.
+ * Blocks.  Only allows 3 digit positive numbers.
+ */
+int serial_read_number( void )
 {
   char c;
+  int number=-1;
 
-  while (Serial.available())
+  //Serial.println("serial_read_number");
+  
+  // keep going until either we get a number (followed by \n), or an invalid character.
+  while (true)
   {
-    c = Serial.read();
-  }
-}
-
-void print_top_menu( void )
-{
-  Serial.println("Configuration:");
-  Serial.println("1....set WiFi SSID and password");
-  Serial.println("2....set MQTT Broker");
-  Serial.println("3....set MQTT Client Name");
-}
-
-void user_input( void )
-{
-  char c;
-
-  while (Serial.available())
-  {
-    c = Serial.read();
-
-    switch (c)
+    if (Serial.available())
     {
-      case '1':
-        empty_serial_buffer();
-        configure_wifi();
-      break;
+      c = Serial.read();
 
-      case '2':
-      break;
+      //Serial.print("char: ");
+      //Serial.println(c);
 
-      case '3':
-      break;
+      if (c == '\n') return number;
+      if (c < '0') return -1;
+      if (c > '9') return -1;
 
-      default:
-        print_top_menu();
+      // If we get to here, that means the c char is a digit.  Add it in to our number.
+      if (number =- -1) number = 0;
+
+      number = number * 10;
+      number = number + (c - '0');
     }
   }
   
 }
+/*===============================================
+ * serial_read_string
+ * 
+ * Reads a string from the serial port.
+ */
+void serial_read_string( char *str, int max_chars )
+{
+  char c;
+  int char_cnt=0;
 
+  //Serial.println("serial_read_string");
+  
+  // keep going until either we get a number (followed by \n), or an invalid character.
+  while (true)
+  {
+    if (Serial.available())
+    {
+      c = Serial.read();
+
+      //Serial.print("char: ");
+      //Serial.println(c);
+
+      // if we've got a \n, then we want to properly terminate the string and return.
+      if (c == '\n')
+      {
+        *str = NULL;
+        return;
+      }
+      // otherwise, keep building the string.
+      else
+      {
+        *str = c;
+        str++;
+        char_cnt++;
+        
+        if (char_cnt == (max_chars -1))
+        {
+          *str = NULL;
+          return;
+        }
+      }
+    } 
+  }
+}
+
+
+#define BROKER_STR_SIZE 16
+void configure_broker( void )
+{
+  char broker_string[BROKER_STR_SIZE];
+  int  addr_int;
+  int  addr_index;
+  char *str_ptr=broker_string;
+  
+  Serial.println("Enter broker address (format:  127.0.0.1)");
+
+  //start by reading in the string from the serial port.
+  serial_read_string(broker_string, BROKER_STR_SIZE);
+
+  // Now that we've got the string, we need to parse it.  
+  // We're expecting IPV4 format (eg "127.0.0.1")
+  // We'll use the addr_int variable to accumulate each address byte, and
+  // addr_index to tell which byte we're looking at.
+  //    Example above:  127 is the 0th addr_index, 1 is the 3rd.
+  addr_int = -1;
+  addr_index = 0;
+  while (true)
+  {
+
+    // If we've got a dot, go to the next address index.
+    if (*str_ptr == '.')
+    {
+      // if we haven't gotten a valid number, print an error and exit.
+      if ( (addr_int < 0) || (addr_int > 255) )
+      {
+        Serial.println("Invalid byte in address");
+        return;
+      }
+      else
+      {
+        //Serial.println("Found a dot...going to next address");
+        
+        nv_data.broker_addr[addr_index] = addr_int;
+        str_ptr++;
+        addr_int = -1;
+
+        // make sure we don't have too many dots...
+        if (addr_index >= 3)
+        {
+           Serial.println("Invalid address...more than 4 entries");
+           return; 
+        }
+        else
+        {
+          addr_index++;
+        }
+      }
+    }
+    // if this is the end of our string, make sure we're on the fourth byte, and confirm
+    // that it's in range.
+    else if (*str_ptr == NULL)
+    {
+      if ((addr_index == 3) && (addr_int >= 0) && (addr_int <=255))
+      {
+        //Serial.println("Found End of String.");
+        nv_data.broker_addr[addr_index] = addr_int;
+        break;
+      }
+      else
+      {
+        Serial.println("invalid address");
+        return;
+      }
+    }
+    // If we've got a digit, build our current address.
+    else if ( (*str_ptr >= '0') && (*str_ptr <= '9') )
+    {
+      if (addr_int == -1) addr_int = 0;
+      addr_int = addr_int * 10;
+      addr_int = addr_int + (*str_ptr - '0');      
+
+      // Serial.print("Saw a ");
+      // Serial.print(*str_ptr);
+      // Serial.print("...number = ");
+      // Serial.println(addr_int);
+      
+      str_ptr++;
+    }
+    
+    // If we got here, this is an invalid character.
+    else
+    {
+      Serial.print("Invalid char in parsing broker address: ");
+      Serial.println(*str_ptr);
+      return;
+    }
+  }
+
+  // at this point, we should have built a valid address.  Commit it to NV.
+  Serial.print("Broker Address = ");
+  Serial.print(nv_data.broker_addr[0]);
+  Serial.print(".");
+  Serial.print(nv_data.broker_addr[1]);
+  Serial.print(".");
+  Serial.print(nv_data.broker_addr[2]);
+  Serial.print(".");
+  Serial.println(nv_data.broker_addr[3]);
+
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+  
+}
+
+void configure_client_id( void )
+{ 
+  Serial.println("Enter client ID");
+  Serial.println("  (no spaces, 20 chars max)");
+
+  serial_read_string(nv_data.client_id, 21);
+
+  Serial.print("Set client to ");
+  Serial.println(nv_data.client_id);
+  
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+
+}
 
 #define BUF_SIZE 40
 void configure_wifi( void )
@@ -159,6 +333,53 @@ state_type process_disconnect_state( void )
     }
 }
 
+void print_offline_menu( void )
+{
+  Serial.println("Configuration:");
+  Serial.println("1....set WiFi SSID and password");
+  Serial.println("2....set MQTT Broker");
+  Serial.println("3....set MQTT Client Name");
+  Serial.println("4....exit offline mode");
+}
+
+state_type process_offline_state( void )
+{
+  int input;
+
+  print_offline_menu();
+
+  input = serial_read_number();
+
+  Serial.print("Read a ");
+  Serial.println(input);
+
+    switch (input)
+    {
+      case 1:
+        configure_wifi();
+      break;
+
+      case 2:
+        configure_broker();
+      break;
+
+      case 3:
+        configure_client_id();
+      break;
+
+      case 4:
+        init_disconnect_state();
+        return STATE_DISCONNECT;
+        
+      default:
+        Serial.println("Unknown command");
+        print_offline_menu();
+    }
+
+  return STATE_OFFLINE;
+  
+}
+
 // Connect to WiFi network using stored credentials.
 void setup_wifi() 
 {
@@ -198,14 +419,36 @@ void reconnect() {
   }
 }
 
+void print_broker_addr( void )
+{
+  int i;
+
+  for (i=0;i<4;i++)
+  {
+    Serial.print(nv_data.broker_addr[i]);
+    Serial.print(".");
+  }
+  Serial.println();
+}
+
 void setup() 
 {
   Serial.begin(9600); 
 
-  Serial.println("Initializing 8266 MQTT Joystick");
+  EEPROM.begin(sizeof(nv_data_type));
+  EEPROM.get(0, nv_data);
 
-  delay(100);
-  init_disconnect_state();
+  Serial.println();
+  Serial.println("Initializing 8266 MQTT Joystick");
+  Serial.print("Client id: ");
+  Serial.println(nv_data.client_id);
+  Serial.print("Broker addr: ");
+  print_broker_addr();
+ 
+  Serial.println("Init complete");
+
+  //delay(100);
+  //init_disconnect_state();
 
   /*
   configure_wifi();
@@ -219,13 +462,14 @@ void setup()
 
 void loop()
 {
-  static state_type current_state=STATE_DISCONNECT;
-  
-  // process any user input.  This will be a blocking call to configure the appropriate data.
-  user_input();  
+  static state_type current_state=STATE_OFFLINE;  
 
   switch (current_state)
   {
+    case STATE_OFFLINE:
+      current_state = process_offline_state();
+    break;
+    
     case STATE_DISCONNECT:
       current_state = process_disconnect_state();
     break;
@@ -245,39 +489,4 @@ void loop()
       Serial.println("Unexpected STATE!!!");
   }  // end of switch on current state
     
-}
-
-
-void old_loop() 
-{
-  if (!client.connected())  // Reconnect if connection is lost
-  {
-    reconnect();
-  }
-  client.loop();
-
-  // if the switch is being pressed
-  if(digitalRead(SWITCH_PIN) == 0) 
-  {
-    /*
-    state = !state; //toggle state
-    if(state == 1) // ON
-    {
-      client.publish(TOPIC, "on");
-      Serial.println((String)TOPIC + " => on");
-    }
-    else // OFF
-    {
-      client.publish(TOPIC, "off");
-      Serial.println((String)TOPIC + " => off");
-    }
-    */
-
-    while(digitalRead(SWITCH_PIN) == 0) // Wait for switch to be released
-    {
-      // Let the ESP handle some behind the scenes stuff if it needs to
-      yield(); 
-      delay(20);
-    }
-  }
 }
