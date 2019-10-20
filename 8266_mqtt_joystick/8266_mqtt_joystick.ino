@@ -7,9 +7,8 @@ MQTT joystick on 8266 thing.
 
 #include <EEPROM.h>
 
-const byte SWITCH_PIN = 0;           // Pin to control the light with
-const char *ID = "Example_Switch";  // Name of our device, must be unique
-const char *TOPIC = "room/light";  // Topic to subcribe to
+#include <Wire.h>
+#define JOYSTICK_ADDR 0x20
 
 String player;
 volatile bool registration_complete = false;
@@ -508,9 +507,59 @@ state_type process_registering_with_game( void )
   }
 }
 
+int read_joystick_register( int addr )
+{
+
+  Wire.beginTransmission(JOYSTICK_ADDR);
+  Wire.write(addr);
+  Wire.endTransmission();
+  
+  Wire.requestFrom(JOYSTICK_ADDR,1);
+  if (Wire.available())
+  {
+    return Wire.read();
+  }
+  else
+  {
+    Serial.println("wire setup read failed");
+    return -1;
+  }
+}
+
+uint8_t joystick_get_horiz()
+{
+  return read_joystick_register(0x03);
+}
+
+uint8_t joystick_get_vert()
+{
+  return read_joystick_register(0x05);
+}
+
+state_type process_joystick( void )
+{
+  int x;
+  int y;
+
+  x = joystick_get_horiz();
+  y = joystick_get_vert();
+
+  Serial.print("X: ");
+  Serial.print(x);
+  Serial.print(" Y: ");
+  Serial.println(y);
+
+  delay(1000);
+
+  return STATE_ACTIVE;
+}
+
 void setup() 
 {
   Serial.begin(9600); 
+
+  // pin 2 data, pin 14 clock
+  Wire.begin(14,2);
 
   EEPROM.begin(sizeof(nv_data_type));
   EEPROM.get(0, nv_data);
@@ -520,15 +569,14 @@ void setup()
   Serial.print("Client id: ");
   Serial.println(nv_data.client_id);
   Serial.print("Broker addr: ");
-  print_broker_addr();
- 
+  print_broker_addr();  
   Serial.println("Init complete");
 
 }
 
 void loop()
 {
-  static state_type current_state=STATE_OFFLINE;  
+  static state_type current_state=STATE_ACTIVE;  
 
   switch (current_state)
   {
@@ -579,8 +627,16 @@ void loop()
     break;
 
     case STATE_ACTIVE:
-       Serial.println("ACTIVE!!!");
-       delay(5000);
+      if (Serial.available())
+      {
+        Serial.println("Going to offline state....");
+        current_state = STATE_OFFLINE;
+      }
+      else
+      {
+        current_state = process_joystick();
+      }
+
     break;
 
     default:
