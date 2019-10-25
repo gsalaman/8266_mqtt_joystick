@@ -46,6 +46,13 @@ typedef enum
   STATE_ACTIVE
 } state_type;
 
+typedef enum 
+{
+  JOYSTICK_LOW = 0,
+  JOYSTICK_MID,
+  JOYSTICK_HIGH
+} joystick_position_type;
+
 /*===============================================
  * serial_read_number
  * 
@@ -507,60 +514,92 @@ state_type process_registering_with_game( void )
   }
 }
 
-int read_joystick_register( int addr )
+bool joystick_read(int *horiz, int *vert)
 {
-
   Wire.beginTransmission(JOYSTICK_ADDR);
-  Wire.write(addr);
+  Wire.write(0x03);
   Wire.endTransmission();
-  
-  Wire.requestFrom(JOYSTICK_ADDR,1);
-  if (Wire.available())
+
+  Wire.requestFrom(JOYSTICK_ADDR,4);
+  if (Wire.available()==4)
   {
-    return Wire.read();
+    // only using the msb for horizontal and vertical
+    *horiz = Wire.read();
+    Wire.read();
+    *vert = Wire.read();
+    Wire.read();
+    return true;
   }
   else
   {
     Serial.println("wire setup read failed");
-    return -1;
+    return false;
   }
 }
 
-uint8_t joystick_get_horiz()
-{
-  return read_joystick_register(0x03);
-}
 
-uint8_t joystick_get_vert()
+
+#define MAX_JOYSTICK_VALUE 255
+#define JOYSTICK_BUFFER 50
+
+joystick_position_type map_joystick(int value)
 {
-  return read_joystick_register(0x05);
+  if (value < JOYSTICK_BUFFER) return JOYSTICK_LOW;
+  if (value < (MAX_JOYSTICK_VALUE - JOYSTICK_BUFFER)) return JOYSTICK_MID;
+  return JOYSTICK_HIGH;
 }
 
 state_type process_joystick( void )
 {
   int x;
   int y;
+  static joystick_position_type last_vert=JOYSTICK_MID;
+  static joystick_position_type last_horiz=JOYSTICK_MID;
+  joystick_position_type curr_vert;
+  joystick_position_type curr_horiz;
 
-  x = joystick_get_horiz();
-  y = joystick_get_vert();
+  joystick_read(&x,&y);
+  curr_horiz = map_joystick(x);
+  curr_vert = map_joystick(y);
 
-  Serial.print("X: ");
-  Serial.print(x);
-  Serial.print(" Y: ");
-  Serial.println(y);
+  if (last_horiz == JOYSTICK_MID)
+  {
+    if (curr_horiz == JOYSTICK_LOW)
+    {
+      Serial.println("LEFT");
+    }
+    else if (curr_horiz == JOYSTICK_HIGH)
+    {
+      Serial.println("RIGHT");
+    }
+  }
+  last_horiz = curr_horiz;
 
-  delay(1000);
+  if (last_vert == JOYSTICK_MID)
+  {
+    if (curr_vert == JOYSTICK_LOW)
+    {
+      Serial.println("UP");
+    }
+    else if (curr_vert == JOYSTICK_HIGH)
+    {
+      Serial.println("DOWN");
+    }
+  }
+  last_vert = curr_vert;
 
   return STATE_ACTIVE;
 }
+
 
 void setup() 
 {
   Serial.begin(9600); 
 
   // pin 2 data, pin 14 clock
-  Wire.begin(14,2);
-
+  Wire.begin();
+  Wire.setClockStretchLimit(2000);
+  
   EEPROM.begin(sizeof(nv_data_type));
   EEPROM.get(0, nv_data);
 
