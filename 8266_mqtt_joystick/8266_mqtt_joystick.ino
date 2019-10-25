@@ -10,7 +10,8 @@ MQTT joystick on 8266 thing.
 #include <Wire.h>
 #define JOYSTICK_ADDR 0x20
 
-String player;
+#define PLAYER_MAX_LEN 10
+char player[PLAYER_MAX_LEN];
 volatile bool registration_complete = false;
 
 //IPAddress broker(10,0,0,17); // IP address of your MQTT broker eg. 192.168.1.50
@@ -436,8 +437,14 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length)
 {
   //String response;
 
+  if (length > PLAYER_MAX_LEN) 
+  {
+    Serial.println("player length too long!!!");
+    return;
+  }
+  
   for (int i = 0; i < length; i++) {
-    player += (char)payload[i];
+    player[i] = (char)payload[i];
   }
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -561,15 +568,17 @@ state_type process_joystick( void )
   joystick_read(&x,&y);
   curr_horiz = map_joystick(x);
   curr_vert = map_joystick(y);
-
+  
   if (last_horiz == JOYSTICK_MID)
   {
     if (curr_horiz == JOYSTICK_LOW)
     {
+      client.publish(player, "left");
       Serial.println("LEFT");
     }
     else if (curr_horiz == JOYSTICK_HIGH)
     {
+      client.publish(player, "right");
       Serial.println("RIGHT");
     }
   }
@@ -579,10 +588,12 @@ state_type process_joystick( void )
   {
     if (curr_vert == JOYSTICK_LOW)
     {
+      client.publish(player, "up");
       Serial.println("UP");
     }
     else if (curr_vert == JOYSTICK_HIGH)
     {
+      client.publish(player, "down");
       Serial.println("DOWN");
     }
   }
@@ -615,7 +626,7 @@ void setup()
 
 void loop()
 {
-  static state_type current_state=STATE_ACTIVE;  
+  static state_type current_state=STATE_DISCONNECT;  
 
   switch (current_state)
   {
