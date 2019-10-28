@@ -624,7 +624,7 @@ state_type process_joystick( void )
   }
   last_vert = curr_vert;
 
-  // will this let keepalive go?
+  // this is needed to send out the keepalives to detect we're still connected.
   client.loop();
 
   return STATE_ACTIVE;
