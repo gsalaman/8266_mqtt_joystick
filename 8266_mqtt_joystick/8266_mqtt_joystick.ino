@@ -10,6 +10,25 @@ MQTT joystick on 8266 thing.
 #include <Wire.h>
 #define JOYSTICK_ADDR 0x20
 
+#define LED_PIN_RED   5
+#define LED_PIN_GREEN 0
+#define LED_PIN_BLUE  4
+
+// I'm going to be using these as bitmasks to determine which lines to raise
+// when setting color.  MSB = red, MiddleSB=Green, LSB=Blue.  
+// This means order matters in this enum!!!
+typedef enum
+{
+  COLOR_OFF=0,
+  COLOR_BLUE=1,
+  COLOR_GREEN=2,
+  COLOR_CYAN=3,
+  COLOR_RED=4,
+  COLOR_MAGENTA=5,
+  COLOR_YELLOW=6,
+  COLOR_WHITE=7
+} color_type;
+
 #define PLAYER_MAX_LEN 10
 char player[PLAYER_MAX_LEN];
 volatile bool registration_complete = false;
@@ -475,7 +494,13 @@ state_type process_looking_for_broker( void )
   {
      Serial.print("Attempting MQTT connection...");
 
-    if (client.connect(nv_data.client_id)) 
+    // I'm using the client.connect function with last will parameters
+    // to send "register/release" with client_id as the payload, as per our wrapper driver protocol.
+    if (client.connect(nv_data.client_id,  // The client ID for the broker
+                       "register/release", // last will message topic
+                       0,                  // last will QOS
+                       false,              // last will retain flag
+                       nv_data.client_id))  // last will message itself
     {
       Serial.println("connected");
 
@@ -599,12 +624,54 @@ state_type process_joystick( void )
   }
   last_vert = curr_vert;
 
+  // will this let keepalive go?
+  client.loop();
+
   return STATE_ACTIVE;
 }
 
-
-void setup() 
+void set_led(color_type color)
 {
+  int red_line;
+  int green_line;
+  int blue_line;
+
+  // bitmask to extract line value from our color enum
+  red_line = (color & 0x04) >> 2;
+  green_line = (color & 0x02) >> 1;
+  blue_line = color & 0x01;
+
+  digitalWrite(LED_PIN_RED, red_line);
+  digitalWrite(LED_PIN_GREEN, green_line);
+  digitalWrite(LED_PIN_BLUE, blue_line);
+
+  //Serial.print("LED: ");
+  //Serial.println((int) color);
+}
+
+// This is a quick power-up LED test to cycle through all colors.
+void led_test(void)
+{
+  // I'm going to cheat and increment an int to cycle through all colors.
+  int color;  
+
+  for (color=0; color<=COLOR_WHITE; color++)
+  {
+    set_led( (color_type) color );
+    delay(1000);
+  }
+
+  set_led(COLOR_OFF);
+}
+
+void setup( void ) 
+{
+  pinMode(LED_PIN_RED, OUTPUT);
+  pinMode(LED_PIN_GREEN, OUTPUT);
+  pinMode(LED_PIN_BLUE, OUTPUT);
+  
+  set_led(COLOR_OFF);
+  
   Serial.begin(9600); 
 
   // pin 2 data, pin 14 clock
@@ -614,6 +681,7 @@ void setup()
   EEPROM.begin(sizeof(nv_data_type));
   EEPROM.get(0, nv_data);
 
+  
   Serial.println();
   Serial.println("Initializing 8266 MQTT Joystick");
   Serial.print("Client id: ");
@@ -622,6 +690,7 @@ void setup()
   print_broker_addr();  
   Serial.println("Init complete");
 
+  led_test();
 }
 
 void loop()
@@ -631,10 +700,13 @@ void loop()
   switch (current_state)
   {
     case STATE_OFFLINE:
+      set_led(COLOR_WHITE);
       current_state = process_offline_state();
     break;
     
     case STATE_DISCONNECT:
+      set_led(COLOR_RED);
+      
       // any serial input will kick us to offline.
       if (Serial.available())
       {
@@ -648,6 +720,8 @@ void loop()
     break;
 
     case STATE_LOOKING_FOR_BROKER:
+      set_led(COLOR_YELLOW);
+      
       if (Serial.available())
       {
         Serial.println("Going to offline state....");
@@ -660,6 +734,8 @@ void loop()
     break;
 
     case STATE_REGISTERING_WITH_GAME:
+      set_led(COLOR_BLUE);
+      
       // We're expecting an MQTT callback with a "registration/response" topic.  
       // That callback will set the registration_complete flag.
       
@@ -677,6 +753,7 @@ void loop()
     break;
 
     case STATE_ACTIVE:
+      set_led(COLOR_GREEN);
       if (Serial.available())
       {
         Serial.println("Going to offline state....");
@@ -692,5 +769,5 @@ void loop()
     default:
       Serial.println("Unexpected STATE!!!");
   }  // end of switch on current state
-    
+
 }
