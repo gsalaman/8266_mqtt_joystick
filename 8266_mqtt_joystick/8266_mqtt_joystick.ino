@@ -572,7 +572,7 @@ bool joystick_read(int *horiz, int *vert)
 
 
 #define MAX_JOYSTICK_VALUE 255
-#define JOYSTICK_BUFFER 50
+#define JOYSTICK_BUFFER 20
 
 joystick_position_type map_joystick(int value)
 {
@@ -590,21 +590,32 @@ state_type process_joystick( void )
   joystick_position_type curr_vert;
   joystick_position_type curr_horiz;
 
+  // Okay, we have a snafu.  The joystick is mounted in the case such that the y direction is horizontal
+  // and the x direction is vertical.  
   joystick_read(&x,&y);
-  curr_horiz = map_joystick(x);
-  curr_vert = map_joystick(y);
+  curr_horiz = map_joystick(y);
+  curr_vert = map_joystick(x);
+
+  // DEBUG CODE:
+  #if 0
+  Serial.print("x: ");
+  Serial.print(x);
+  Serial.print(" y: ");
+  Serial.println(y);
+  #endif
+  // END DEBUG
   
   if (last_horiz == JOYSTICK_MID)
   {
     if (curr_horiz == JOYSTICK_LOW)
     {
-      client.publish(player, "left");
-      Serial.println("LEFT");
+      client.publish(player, "right");
+      Serial.println("RIGHT");
     }
     else if (curr_horiz == JOYSTICK_HIGH)
     {
-      client.publish(player, "right");
-      Serial.println("RIGHT");
+      client.publish(player, "left");
+      Serial.println("LEFT");
     }
   }
   last_horiz = curr_horiz;
@@ -626,7 +637,7 @@ state_type process_joystick( void )
 
   // this is needed to send out the keepalives to detect we're still connected.
   client.loop();
-
+  
   return STATE_ACTIVE;
 }
 
