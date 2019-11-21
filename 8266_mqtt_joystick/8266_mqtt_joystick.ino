@@ -91,6 +91,16 @@ typedef enum
   JOYSTICK_HIGH
 } joystick_position_type;
 
+// Describe how the joystick is oriented in the case
+typedef enum
+{
+  JS_ORIENT_VERT = 0,  // vertical orientation.  
+  JS_ORIENT_RH         // right-handed, horizontal orientation.
+} js_orient_type;
+
+// hardcoding this for now...eventually may want it as part of NV.
+js_orient_type joystick_orientation=JS_ORIENT_VERT;
+
 // JOYSTICK_BUFFER is used to determine whether joystick is in a "mid" position, or 
 // whether it's "high" or "low".  Example:
 //   If the joystick axis reading is 220 and the buffer is 50, we'll map that to "high", 
@@ -798,51 +808,88 @@ state_type process_active( void )
 
   // first, check to see if we need to go to offline state
   if (check_for_offline_transitions()) return STATE_OFFLINE;
-  
-  // Okay, we have a snafu.  The joystick is mounted in the case such that the y direction is horizontal
-  // and the x direction is vertical.  
+   
   joystick_read(&x,&y);
-  curr_horiz = map_joystick(y);
-  curr_vert = map_joystick(x);
 
-  // DEBUG CODE:
-  #if 0
-  Serial.print("x: ");
-  Serial.print(x);
-  Serial.print(" y: ");
-  Serial.println(y);
-  #endif
-  // END DEBUG
+  if (joystick_orientation == JS_ORIENT_RH)
+  {
+    //for right-handed orientation, the joystick y axis runs horizontally, with 0 on the right.
+    //  The x axis runs vertially, with 0 on top.
+    curr_horiz = map_joystick(y);
+    curr_vert = map_joystick(x);
   
-  if (last_horiz == JOYSTICK_MID)
-  {
-    if (curr_horiz == JOYSTICK_LOW)
+    if (last_horiz == JOYSTICK_MID)
     {
-      client.publish(player, "right");
-      Serial.println("RIGHT");
+      if (curr_horiz == JOYSTICK_LOW)
+      {
+        client.publish(player, "right");
+        Serial.println("RIGHT");
+      }
+      else if (curr_horiz == JOYSTICK_HIGH)
+      {
+        client.publish(player, "left");
+        Serial.println("LEFT");
+      }
     }
-    else if (curr_horiz == JOYSTICK_HIGH)
-    {
-      client.publish(player, "left");
-      Serial.println("LEFT");
-    }
-  }
-  last_horiz = curr_horiz;
+    last_horiz = curr_horiz;
 
-  if (last_vert == JOYSTICK_MID)
+    if (last_vert == JOYSTICK_MID)
+    {
+      if (curr_vert == JOYSTICK_LOW)
+      {
+        client.publish(player, "up");
+        Serial.println("UP");
+      }
+      else if (curr_vert == JOYSTICK_HIGH)
+      {
+        client.publish(player, "down");
+        Serial.println("DOWN");
+      }
+    }
+    last_vert = curr_vert;
+  } // end of right-hand orientation.
+
+  else if (joystick_orientation == JS_ORIENT_VERT)
   {
-    if (curr_vert == JOYSTICK_LOW)
+    //for vertical orientation, the joystick x axis runs horizontally, with 0 on the left.
+    //  The y axis runs vertially, with 0 on top.
+    curr_horiz = map_joystick(x);
+    curr_vert = map_joystick(y);
+  
+    if (last_horiz == JOYSTICK_MID)
     {
-      client.publish(player, "up");
-      Serial.println("UP");
+      if (curr_horiz == JOYSTICK_LOW)
+      {
+        client.publish(player, "left");
+        Serial.println("LEFT");
+      }
+      else if (curr_horiz == JOYSTICK_HIGH)
+      {
+        client.publish(player, "right");
+        Serial.println("RIGHT");
+      }
     }
-    else if (curr_vert == JOYSTICK_HIGH)
+    last_horiz = curr_horiz;
+
+    if (last_vert == JOYSTICK_MID)
     {
-      client.publish(player, "down");
-      Serial.println("DOWN");
+      if (curr_vert == JOYSTICK_LOW)
+      {
+        client.publish(player, "up");
+        Serial.println("UP");
+      }
+      else if (curr_vert == JOYSTICK_HIGH)
+      {
+        client.publish(player, "down");
+        Serial.println("DOWN");
+      }
     }
+    last_vert = curr_vert;
+  } // end of vertical orientation.
+  else
+  {
+    Serial.println("INVALID JOYSTICK ORIENTATION!!!");
   }
-  last_vert = curr_vert;
 
   // this is needed to send out the keepalives to detect we're still connected.
   client.loop();
