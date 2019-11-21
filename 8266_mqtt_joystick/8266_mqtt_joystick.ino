@@ -451,6 +451,33 @@ void configure_client_id( void )
 }
 
 /*=====================================
+ * check_for_offline_transitions
+ * 
+ * In all states other than offline, we use the serial port 
+ * as a mechniasm to transition to offline mode.  This function
+ * does that check, and if so, it will initialize offline state and
+ * return TRUE.  
+ */
+bool check_for_offline_transitions( void )
+{
+  // any serial input will kick us to offline.
+  if (Serial.available())
+  { 
+    Serial.println("Going to offline state...");
+
+    // Note that initing offline state will clear the serial buffer 
+    // so that we get a fresh start.
+    init_offline_state();
+    
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+/*=====================================
  * print_offline_menu
  */
 void print_offline_menu( void )
@@ -565,6 +592,9 @@ void init_disconnect_state( void )
 state_type process_disconnect_state( void )
 {
   static int wifi_led=LOW;
+
+  // first, check to see if we need to go to offline state
+  if (check_for_offline_transitions()) return STATE_OFFLINE;
   
   if (WiFi.status() != WL_CONNECTED) 
   { 
@@ -612,6 +642,9 @@ void init_looking_for_broker( void )
  */
 state_type process_looking_for_broker( void )
 {
+  
+  // first, check to see if we need to go to offline state
+  if (check_for_offline_transitions()) return STATE_OFFLINE;
   
   if (!client.connected())
   {
@@ -699,6 +732,13 @@ state_type process_registering_with_game( void )
   static unsigned long last_sent_time=0;
   unsigned long curr_time;
 
+
+  // first, check to see if we need to go to offline state
+  if (check_for_offline_transitions()) return STATE_OFFLINE;
+
+  // Need to call client.loop() to allow the callback to do it's thing.
+  client.loop();
+  
   // Is it time to resend a registration?
   curr_time = millis();
   if (curr_time > last_sent_time + REGISTRATION_RESEND_MS)
@@ -752,6 +792,10 @@ state_type process_active( void )
   joystick_position_type curr_vert;
   joystick_position_type curr_horiz;
 
+
+  // first, check to see if we need to go to offline state
+  if (check_for_offline_transitions()) return STATE_OFFLINE;
+  
   // Okay, we have a snafu.  The joystick is mounted in the case such that the y direction is horizontal
   // and the x direction is vertical.  
   joystick_read(&x,&y);
@@ -818,8 +862,10 @@ state_type joystick_test( void )
   static joystick_position_type last_horiz=JOYSTICK_MID;
   joystick_position_type curr_vert;
   joystick_position_type curr_horiz;
-
-
+  
+  // first, check to see if we need to go to offline state
+  if (check_for_offline_transitions()) return STATE_OFFLINE;
+  
   digitalWrite(LED_PIN_ACTIVE, HIGH);
    
   joystick_read(&x,&y);
@@ -912,65 +958,19 @@ void loop()
     break;
     
     case STATE_DISCONNECT:
-      
-      // any serial input will kick us to offline.
-      if (Serial.available())
-      { 
-        Serial.println("Going to offline state...");
-        init_offline_state();
-        current_state = STATE_OFFLINE;
-      }
-      else
-      {
-        current_state = process_disconnect_state();
-      }
+      current_state = process_disconnect_state();
     break;
 
     case STATE_LOOKING_FOR_BROKER:
-      
-      if (Serial.available())
-      {
-        Serial.println("Going to offline state....");
-        init_offline_state();
-        current_state = STATE_OFFLINE;
-      }
-      else
-      {
-        current_state = process_looking_for_broker();
-      }
+      current_state = process_looking_for_broker();
     break;
 
     case STATE_REGISTERING_WITH_GAME:
-      
-      // We're expecting an MQTT callback with a "registration/response" topic.  
-      // That callback will set the registration_complete flag.
-      
-      client.loop();
-      
-      if (Serial.available())
-      { 
-        Serial.println("Going to offline state....");
-        init_offline_state();
-        current_state = STATE_OFFLINE;
-      }
-      else
-      {
-        current_state = process_registering_with_game();
-      }
+      current_state = process_registering_with_game();
     break;
 
     case STATE_ACTIVE:
-      if (Serial.available())
-      { 
-        Serial.println("Going to offline state....");
-        init_offline_state();
-        current_state = STATE_OFFLINE;
-      }
-      else
-      {
-        current_state = process_active();
-      }
-
+      current_state = process_active();
     break;
 
     case STATE_JOYSTICK_TEST:
