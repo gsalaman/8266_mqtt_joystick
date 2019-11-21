@@ -10,24 +10,10 @@ MQTT joystick on 8266 thing.
 #include <Wire.h>
 #define JOYSTICK_ADDR 0x20
 
-#define LED_PIN_RED   5
-#define LED_PIN_GREEN 0
-#define LED_PIN_BLUE  4
-
-// I'm going to be using these as bitmasks to determine which lines to raise
-// when setting color.  MSB = red, MiddleSB=Green, LSB=Blue.  
-// This means order matters in this enum!!!
-typedef enum
-{
-  COLOR_OFF=0,
-  COLOR_BLUE=1,
-  COLOR_GREEN=2,
-  COLOR_CYAN=3,
-  COLOR_RED=4,
-  COLOR_MAGENTA=5,
-  COLOR_YELLOW=6,
-  COLOR_WHITE=7
-} color_type;
+#define LED_PIN_POWER   5
+#define LED_PIN_WIFI    0
+#define LED_PIN_BROKER  4
+#define LED_PIN_ACTIVE  13
 
 #define PLAYER_MAX_LEN 10
 char player[PLAYER_MAX_LEN];
@@ -63,7 +49,8 @@ typedef enum
   STATE_DISCONNECT,
   STATE_LOOKING_FOR_BROKER,
   STATE_REGISTERING_WITH_GAME,
-  STATE_ACTIVE
+  STATE_ACTIVE,
+  STATE_JOYSTICK_TEST
 } state_type;
 
 typedef enum 
@@ -394,6 +381,7 @@ state_type process_disconnect_state( void )
     }
     else
     {
+      digitalWrite(LED_PIN_WIFI, HIGH);
       init_looking_for_broker();
       return STATE_LOOKING_FOR_BROKER;
     }
@@ -504,6 +492,8 @@ state_type process_looking_for_broker( void )
     {
       Serial.println("connected");
 
+      digitalWrite(LED_PIN_BROKER, HIGH);
+      
       init_registering_with_game();
 
       return STATE_REGISTERING_WITH_GAME;
@@ -538,6 +528,9 @@ state_type process_registering_with_game( void )
   if (registration_complete) 
   {
     Serial.println("Registration Complete!!!");
+    
+    digitalWrite(LED_PIN_ACTIVE, HIGH);
+    
     return STATE_ACTIVE;
   }
   else
@@ -641,48 +634,72 @@ state_type process_joystick( void )
   return STATE_ACTIVE;
 }
 
-void set_led(color_type color)
+
+state_type joystick_test( void )
 {
-  int red_line;
-  int green_line;
-  int blue_line;
+  int x;
+  int y;
+  static joystick_position_type last_vert=JOYSTICK_MID;
+  static joystick_position_type last_horiz=JOYSTICK_MID;
+  joystick_position_type curr_vert;
+  joystick_position_type curr_horiz;
 
-  // bitmask to extract line value from our color enum
-  red_line = (color & 0x04) >> 2;
-  green_line = (color & 0x02) >> 1;
-  blue_line = color & 0x01;
 
-  digitalWrite(LED_PIN_RED, red_line);
-  digitalWrite(LED_PIN_GREEN, green_line);
-  digitalWrite(LED_PIN_BLUE, blue_line);
+  digitalWrite(LED_PIN_ACTIVE, HIGH);
+  
+  // Okay, we have a snafu.  The joystick is mounted in the case such that the y direction is horizontal
+  // and the x direction is vertical.  
+  joystick_read(&x,&y);
+  curr_horiz = map_joystick(y);
+  curr_vert = map_joystick(x);
 
-  //Serial.print("LED: ");
-  //Serial.println((int) color);
+
+  Serial.print("x: ");
+  Serial.print(x);
+  Serial.print(" y: ");
+  Serial.println(y);
+
+  delay(1000);
+  
+  return STATE_JOYSTICK_TEST;
 }
 
-// This is a quick power-up LED test to cycle through all colors.
+// This is a quick power-up LED test 
 void led_test(void)
 {
-  // I'm going to cheat and increment an int to cycle through all colors.
-  int color;  
+  int led_delay_ms = 250; 
+  Serial.println();
+  Serial.println("Start LED test");
+  
+  digitalWrite(LED_PIN_POWER, LOW);
+  digitalWrite(LED_PIN_WIFI, LOW);
+  digitalWrite(LED_PIN_BROKER, LOW);
+  digitalWrite(LED_PIN_ACTIVE, LOW);
 
-  for (color=0; color<=COLOR_WHITE; color++)
-  {
-    set_led( (color_type) color );
-    delay(1000);
-  }
+  digitalWrite(LED_PIN_POWER, HIGH);
+  delay(led_delay_ms);
+  digitalWrite(LED_PIN_WIFI, HIGH);
+  delay(led_delay_ms);
+  digitalWrite(LED_PIN_BROKER, HIGH);
+  delay(led_delay_ms);
+  digitalWrite(LED_PIN_ACTIVE, HIGH);
+  delay(led_delay_ms);
 
-  set_led(COLOR_OFF);
+  // keeping power LED on intentionally
+  digitalWrite(LED_PIN_WIFI, LOW);
+  digitalWrite(LED_PIN_BROKER, LOW);
+  digitalWrite(LED_PIN_ACTIVE, LOW);
+  
+
 }
 
 void setup( void ) 
 {
-  pinMode(LED_PIN_RED, OUTPUT);
-  pinMode(LED_PIN_GREEN, OUTPUT);
-  pinMode(LED_PIN_BLUE, OUTPUT);
-  
-  set_led(COLOR_OFF);
-  
+  pinMode(LED_PIN_POWER, OUTPUT);
+  pinMode(LED_PIN_WIFI, OUTPUT);
+  pinMode(LED_PIN_BROKER, OUTPUT);
+  pinMode(LED_PIN_ACTIVE, OUTPUT);
+
   Serial.begin(9600); 
 
   // pin 2 data, pin 14 clock
@@ -692,8 +709,8 @@ void setup( void )
   EEPROM.begin(sizeof(nv_data_type));
   EEPROM.get(0, nv_data);
 
+  led_test();
   
-  Serial.println();
   Serial.println("Initializing 8266 MQTT Joystick");
   Serial.print("Client id: ");
   Serial.println(nv_data.client_id);
@@ -701,26 +718,25 @@ void setup( void )
   print_broker_addr();  
   Serial.println("Init complete");
 
-  led_test();
 }
 
 void loop()
 {
-  static state_type current_state=STATE_DISCONNECT;  
+  static state_type current_state=STATE_JOYSTICK_TEST;  
 
   switch (current_state)
   {
     case STATE_OFFLINE:
-      set_led(COLOR_WHITE);
       current_state = process_offline_state();
     break;
     
     case STATE_DISCONNECT:
-      set_led(COLOR_RED);
       
       // any serial input will kick us to offline.
       if (Serial.available())
       {
+        // no led update needed here.
+        
         Serial.println("Going to offline state...");
         current_state = STATE_OFFLINE;
       }
@@ -731,10 +747,11 @@ void loop()
     break;
 
     case STATE_LOOKING_FOR_BROKER:
-      set_led(COLOR_YELLOW);
       
       if (Serial.available())
       {
+        digitalWrite(LED_PIN_WIFI, LOW);
+        
         Serial.println("Going to offline state....");
         current_state = STATE_OFFLINE;
       }
@@ -745,7 +762,6 @@ void loop()
     break;
 
     case STATE_REGISTERING_WITH_GAME:
-      set_led(COLOR_BLUE);
       
       // We're expecting an MQTT callback with a "registration/response" topic.  
       // That callback will set the registration_complete flag.
@@ -754,6 +770,9 @@ void loop()
       
       if (Serial.available())
       {
+        digitalWrite(LED_PIN_WIFI, LOW);
+        digitalWrite(LED_PIN_BROKER, LOW);
+        
         Serial.println("Going to offline state....");
         current_state = STATE_OFFLINE;
       }
@@ -764,9 +783,12 @@ void loop()
     break;
 
     case STATE_ACTIVE:
-      set_led(COLOR_GREEN);
       if (Serial.available())
       {
+        digitalWrite(LED_PIN_WIFI, LOW);
+        digitalWrite(LED_PIN_BROKER, LOW);
+        digitalWrite(LED_PIN_ACTIVE, LOW);
+        
         Serial.println("Going to offline state....");
         current_state = STATE_OFFLINE;
       }
@@ -775,6 +797,10 @@ void loop()
         current_state = process_joystick();
       }
 
+    break;
+
+    case STATE_JOYSTICK_TEST:
+      current_state = joystick_test();
     break;
 
     default:
