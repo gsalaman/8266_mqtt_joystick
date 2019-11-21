@@ -1,15 +1,18 @@
 /******************************************************************************
 MQTT joystick on 8266 thing.
 ******************************************************************************/
-
+// WiFi and MQTT headers
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
+// Header for persistent memory
 #include <EEPROM.h>
 
+// I2C header and info
 #include <Wire.h>
 #define JOYSTICK_ADDR 0x20
 
+// LED pin definitions
 #define LED_PIN_POWER   5
 #define LED_PIN_WIFI    0
 #define LED_PIN_BROKER  4
@@ -19,14 +22,15 @@ MQTT joystick on 8266 thing.
 char player[PLAYER_MAX_LEN];
 volatile bool registration_complete = false;
 
-//IPAddress broker(10,0,0,17); // IP address of your MQTT broker eg. 192.168.1.50
 WiFiClient wclient;
-
 PubSubClient client(wclient); // Setup MQTT client
 
-#define SSID_SIZE     40
-#define PASSWORD_SIZE 20
-
+/*  Storing all relevent configuration data in non-volatile memory (via EEPROM).  
+ *  Creating a structure to hold all that data.
+ */
+#define SSID_SIZE      40
+#define PASSWORD_SIZE  20
+#define CLIENT_ID_SIZE 21   // 20 chars plus the null
 typedef struct 
 {
   char ssid[SSID_SIZE];
@@ -38,21 +42,48 @@ typedef struct
   unsigned char broker_addr[4];
 
   // I'm going to limit client ID to 20 characters
-  char client_id[21];
+  char client_id[CLIENT_ID_SIZE];
 } nv_data_type;
 
 nv_data_type nv_data;
 
+/* state of "how far" we're connected */
 typedef enum
 {
-  STATE_OFFLINE = 0,
-  STATE_DISCONNECT,
-  STATE_LOOKING_FOR_BROKER,
-  STATE_REGISTERING_WITH_GAME,
-  STATE_ACTIVE,
-  STATE_JOYSTICK_TEST
+  
+  STATE_OFFLINE = 0,             // Not looking for network...inputting parameters.
+  STATE_DISCONNECT,              // Disconnected, but looking for WiFi
+  STATE_LOOKING_FOR_BROKER,      // Connected to WiFi and looking for broker
+  STATE_REGISTERING_WITH_GAME,   // Broker connection active, trying to get a player ID
+  STATE_ACTIVE,                  // Connected to broker and exchanging MQTT messages for joystick position
+  STATE_JOYSTICK_TEST            // Debug state to check out the joystick I2C reads.
 } state_type;
 
+// Forward function definitions for our state machine
+void init_offline_state();
+state_type process_offline_state();
+void init_disconnect_state();
+state_type process_disconnect_state();
+void init_looking_for_broker();
+state_type process_looking_for_broker();
+void init_registering_with_game();
+state_type process_registering_with_game();
+void init_active();
+state_type process_active();
+void init_joystick_test();
+state_type joystick_test();
+
+/*=============================================================================
+ * JOYSTICK DRIVER FUNCTIONALITY
+ ==============================================================================*/
+
+// We're only reading the 8 MSBs from the joystick, so the value can range from 
+// zero to 255.
+#define MAX_JOYSTICK_VALUE 255
+
+// Generic enum for joystick position...we'll use this to map the 0-255 from
+// the joystick to a "low, mid, or high" reading...and then we'll map low and high
+// to directions on one axis.  Note we're not assuming orientation at this point.
 typedef enum 
 {
   JOYSTICK_LOW = 0,
@@ -60,6 +91,93 @@ typedef enum
   JOYSTICK_HIGH
 } joystick_position_type;
 
+// JOYSTICK_BUFFER is used to determine whether joystick is in a "mid" position, or 
+// whether it's "high" or "low".  Example:
+//   If the joystick axis reading is 220 and the buffer is 50, we'll map that to "high", 
+//   as 220 is within 50 of our max value (255). 
+#define JOYSTICK_BUFFER 20
+
+/*=============================================================
+ * JOYSTIC_READ
+ * 
+ * This function reads an x and y position from the joystick
+ * via I2C.  The positions are returned as reference parameters, whilst
+ * the function itself returns an indicator on whether the I2C read was successful.
+ */
+bool joystick_read(int *horiz, int *vert)
+{
+  Wire.beginTransmission(JOYSTICK_ADDR);
+  Wire.write(0x03);
+  Wire.endTransmission();
+
+  Wire.requestFrom(JOYSTICK_ADDR,4);
+  if (Wire.available()==4)
+  {
+    // only using the msb for horizontal and vertical
+    *horiz = Wire.read();
+    Wire.read();
+    *vert = Wire.read();
+    Wire.read();
+    return true;
+  }
+  else
+  {
+    Serial.println("wire read failed.  I2C issue.");
+    return false;
+  }
+}
+
+/*===============================================================
+ * MAP_JOYSTICK
+ * 
+ * This function maps a raw joystick read to either LOW, MID, or HIGH.
+ * Note this function is axis and direction agnostic.
+ */
+joystick_position_type map_joystick(int value)
+{
+  if (value < JOYSTICK_BUFFER) return JOYSTICK_LOW;
+  if (value < (MAX_JOYSTICK_VALUE - JOYSTICK_BUFFER)) return JOYSTICK_MID;
+  return JOYSTICK_HIGH;
+}
+
+/*==============================================================
+ * MQTT UTILITIES
+ ==============================================================*/
+/*==============================================================
+ * MQTT Callback function
+ * 
+ * This function is used in the "registering with game" state to 
+ * process respnoses.  
+ *  
+ * See the readme at https://github.com/gsalaman/mqtt_gamepad
+ * for more info on the message flow between the game and the gamepad.
+ */
+void mqtt_callback(char* topic, byte* payload, unsigned int length) 
+{
+
+  if (length > PLAYER_MAX_LEN) 
+  {
+    Serial.println("player length too long!!!");
+    return;
+  }
+  
+  for (int i = 0; i < length; i++) {
+    player[i] = (char)payload[i];
+  }
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  Serial.println(player);
+
+  registration_complete = true;
+
+  Serial.println("Registration Complete");
+}
+
+/*=============================================================
+ * SERIAL HELPER FUNCITONS
+ */
+ 
 /*===============================================
  * serial_read_number
  * 
@@ -70,8 +188,6 @@ int serial_read_number( void )
 {
   char c;
   int number=-1;
-
-  //Serial.println("serial_read_number");
   
   // keep going until either we get a number (followed by \n), or an invalid character.
   while (true)
@@ -79,9 +195,6 @@ int serial_read_number( void )
     if (Serial.available())
     {
       c = Serial.read();
-
-      //Serial.print("char: ");
-      //Serial.println(c);
 
       if (c == '\n') return number;
       if (c < '0') return -1;
@@ -141,7 +254,11 @@ void serial_read_string( char *str, int max_chars )
   }
 }
 
-
+/*===============================================
+ * print_broker_addr
+ * 
+ * Prints a line with our broker address out the serial port.
+ */
 void print_broker_addr( void )
 {
   int i;
@@ -154,6 +271,55 @@ void print_broker_addr( void )
   Serial.println();
 }
 
+/*===================================================================
+ * OFFLINE STATE FUNCTIONS 
+ * =================================================================*/
+
+/*======================================
+ * configure_ssid
+ * 
+ * This function reads a string from the serial port and uses it to 
+ * set our SSID.
+ */
+void configure_ssid( void )
+{ 
+  Serial.println("Enter SSID");
+  
+  serial_read_string(nv_data.ssid, SSID_SIZE);
+
+  Serial.print("Set SSID to ");
+  Serial.println(nv_data.ssid);
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+
+}
+
+/*======================================
+ * configure_password
+ * 
+ * This function reads a string from the serial port and uses it to 
+ * set our WiFi password.
+ */
+void configure_pasword( void )
+{ 
+  Serial.println("Enter password");
+  
+  serial_read_string(nv_data.password, PASSWORD_SIZE);
+
+  Serial.print("Set password");
+  
+  EEPROM.put(0,nv_data);
+  EEPROM.commit();
+
+}
+
+/*======================================
+ * configure_broker
+ * 
+ * This function reads a string from the serial port and uses it to 
+ * set our broker address.  Note that this string needs to be in IPV4 format.
+ */
 #define BROKER_STR_SIZE 16
 void configure_broker( void )
 {
@@ -262,12 +428,18 @@ void configure_broker( void )
   
 }
 
+/*======================================
+ * configure_client_id
+ * 
+ * This function reads a string from the serial port and uses it to 
+ * set our MQTT client id.
+ */
 void configure_client_id( void )
 { 
   Serial.println("Enter client ID");
   Serial.println("  (no spaces, 20 chars max)");
 
-  serial_read_string(nv_data.client_id, 21);
+  serial_read_string(nv_data.client_id, CLIENT_ID_SIZE);
 
   Serial.print("Set client to ");
   Serial.println(nv_data.client_id);
@@ -278,125 +450,54 @@ void configure_client_id( void )
 
 }
 
-
-void configure_ssid( void )
-{ 
-  Serial.println("Enter SSID");
-  
-  serial_read_string(nv_data.ssid, SSID_SIZE);
-
-  Serial.print("Set SSID to ");
-  Serial.println(nv_data.ssid);
-  
-  EEPROM.put(0,nv_data);
-  EEPROM.commit();
-
-}
-
-
-void configure_pasword( void )
-{ 
-  Serial.println("Enter password");
-  
-  serial_read_string(nv_data.password, PASSWORD_SIZE);
-
-  Serial.print("Set password");
-  
-  EEPROM.put(0,nv_data);
-  EEPROM.commit();
-
-}
-
-#define BUF_SIZE 40
-#define TIMEOUT_TICK_COUNT 120
-void configure_wifi( void )
-{
-  char ssid[BUF_SIZE];
-  char pass[BUF_SIZE];
-  char *curr_char = ssid;
-  int timeout_ticks;
-
-  // So this is kinda funky.  I'm cheating by connecting to the network inside of "configure_wifi" and using the 
-  // intrinsic 8266 functionality to store ssid and password.
-  // I'm gonnna disconnect at the end so that we always enter "disconnect" the same way.
-  
-  // disconnect from any currently assigned networks.
-  //WiFi.disconnect();
-  
-  Serial.println("Enter SSID");
-
-  serial_read_string(ssid, BUF_SIZE);
-  Serial.print("SSID=");
-  Serial.println(ssid);
-
-  Serial.println("Enter Password");
-
-  serial_read_string(pass, BUF_SIZE);
-  
-  Serial.print("Pass=");
-  Serial.println(pass);
-
-  Serial.print("\nLooking for network");
-  
-  WiFi.begin(ssid, pass); // Connect to network
-
-  // Keep looking until we either connect or timeout.
-  timeout_ticks = 0;
-  while ((WiFi.status() != WL_CONNECTED) && (timeout_ticks < TIMEOUT_TICK_COUNT)) 
-  { // Wait for connection
-    delay(1000);
-    Serial.print(".");
-    timeout_ticks++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED)
-  {
-     Serial.println("WiFi found");   
-  }
-  else
-  {
-    Serial.println("Couldn't connect to network");
-  }
-
-  // I'm putting this disconnect here...in the case we're connected, we'll disconnect (since we set this in offline)
-  // In the case we weren't able to connect, I think this stops the "WiFi.begin()" so we stop looking.
-  WiFi.disconnect();
-  
-}
-
-void init_disconnect_state( void )
-{
-  Serial.print("\nConnecting to network");
-  WiFi.begin(nv_data.ssid, nv_data.password); // Connect to network
-}
-
-state_type process_disconnect_state( void )
-{
-    if (WiFi.status() != WL_CONNECTED) 
-    { 
-      // Wait for connection
-      delay(500);
-      Serial.print(".");
-      return STATE_DISCONNECT;
-    }
-    else
-    {
-      digitalWrite(LED_PIN_WIFI, HIGH);
-      init_looking_for_broker();
-      return STATE_LOOKING_FOR_BROKER;
-    }
-}
-
+/*=====================================
+ * print_offline_menu
+ */
 void print_offline_menu( void )
 {
   Serial.println("Configuration:");
   Serial.println("1....set WiFi SSID");
-  Serial.println("2....set WiFi passwork");
+  Serial.println("2....set WiFi password");
   Serial.println("3....set MQTT Broker");
   Serial.println("4....set MQTT Client Name");
   Serial.println("5....exit offline mode");
 }
 
+/*=============================================================
+ * INIT_OFFLINE_STATE
+ */
+void init_offline_state( void )
+{
+  bool buffer_flushed = false;
+  char c;
+
+  // Leave the power LED on, but turn all the others off.
+  digitalWrite(LED_PIN_WIFI, LOW);
+  digitalWrite(LED_PIN_BROKER, LOW);
+  digitalWrite(LED_PIN_ACTIVE, LOW);
+  
+  // To get to offline state, the user needed to type something in the 
+  // serial window...which means we have a buffer of chars up to a '/n'.  Flush those.
+  while (!buffer_flushed)
+  {
+    if (Serial.available())
+    {
+      c = Serial.read();
+      if (c == '\n')
+      {
+        buffer_flushed = true;
+      }
+    }
+  }  
+}
+
+/*==================================================
+ * PROCESS_OFFLINE_STATE
+ * 
+ * This is the state handler function for the offline state.
+ * In offline state, we allow the user to program (via the serial port)
+ * our WiFi and MQTT configuration data. 
+ */
 state_type process_offline_state( void )
 {
   int input;
@@ -439,30 +540,60 @@ state_type process_offline_state( void )
   
 }
 
-// Handle incomming messages from the broker
-void mqtt_callback(char* topic, byte* payload, unsigned int length) 
+/*=================================================================
+ * DISCONNECT STATE FUNCTIONS
+ =================================================================*/
+
+/*=========================================
+ * init_disconnect_state
+ * 
+ * Initializes our disconnected state by starting to look for WiFi
+ */
+void init_disconnect_state( void )
 {
-  //String response;
-
-  if (length > PLAYER_MAX_LEN) 
-  {
-    Serial.println("player length too long!!!");
-    return;
-  }
-  
-  for (int i = 0; i < length; i++) {
-    player[i] = (char)payload[i];
-  }
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  Serial.println(player);
-
-  registration_complete = true;
-
-  Serial.println("Registration Complete");
+  Serial.print("\nConnecting to network");
+  WiFi.begin(nv_data.ssid, nv_data.password); // Connect to network
 }
 
+/*=========================================
+ * process_disconnect_state
+ * 
+ * Processes our disconnect state by continously checking our WiFi status.
+ * We'll stay in disconnect if we're not connected..otherwise we'll start
+ * looking for our broker.
+ */
+state_type process_disconnect_state( void )
+{
+  static int wifi_led=LOW;
+  
+  if (WiFi.status() != WL_CONNECTED) 
+  { 
+    // Wait for connection
+    delay(500);
+    Serial.print(".");
+
+    // Flash the WiFi LED whilst were trying to connect.
+    wifi_led = !wifi_led;
+    digitalWrite(LED_PIN_WIFI, wifi_led);
+      
+    return STATE_DISCONNECT;
+  }
+  else
+  {
+    digitalWrite(LED_PIN_WIFI, HIGH);
+    init_looking_for_broker();
+    return STATE_LOOKING_FOR_BROKER;
+  }
+}
+
+/*=================================================================
+ * LOOKING_FOR_BROKER STATE FUNCTIONS
+ =================================================================*/
+/*=====================================
+ * init_looking_for_broker
+ * 
+ * This function assumes we're connected to wifi, and sets up a client for MQTT connection.
+ */
 void init_looking_for_broker( void )
 { 
   Serial.print("Looking for broker: ");
@@ -474,9 +605,13 @@ void init_looking_for_broker( void )
   client.setCallback(mqtt_callback);
 }
 
+/*=====================================
+ * process_looking_for_broker
+ * 
+ * This function attempts to connect to the MQTT broker.
+ */
 state_type process_looking_for_broker( void )
 {
-
   
   if (!client.connected())
   {
@@ -500,14 +635,33 @@ state_type process_looking_for_broker( void )
     } 
     else 
     {
-      Serial.println(" try again in 2 seconds");
+      //   eventually we'll want to flash the LED whilst looking, but for now we'll
+      //   just leave it off.
+    
       // Wait 2 seconds before retrying
+      Serial.println(" try again in 2 seconds");
       delay(2000);
+      
       return STATE_LOOKING_FOR_BROKER;
     }
   }
 }
 
+
+/*=======================================================================
+ * REGISTERING-WITH-GAME STATE FUNCTIONS
+ * 
+ *   Now that we've got a connection to the broker, attempt to connect 
+ *   to the game itself, via the the registration mechanism found here:
+ *   https://github.com/gsalaman/mqtt_gamepad
+ *======================================================================*/
+
+/*============================================
+ * init_registering_with_game
+ * 
+ * Start the registration process by publishing our client ID.
+ * The response will be processed async by the mqtt callback.
+ */
 void init_registering_with_game( void )
 {
     char subscribe_str[30]="register/";
@@ -523,13 +677,19 @@ void init_registering_with_game( void )
     Serial.println(nv_data.client_id);
 }
 
+/*============================================
+ * process_registering_with_game
+ * 
+ * This function looks for the registration_complete indicator
+ * (set by the MQTT callback)
+ */
 state_type process_registering_with_game( void )
 {
   if (registration_complete) 
   {
     Serial.println("Registration Complete!!!");
     
-    digitalWrite(LED_PIN_ACTIVE, HIGH);
+    init_active();
     
     return STATE_ACTIVE;
   }
@@ -539,42 +699,21 @@ state_type process_registering_with_game( void )
   }
 }
 
-bool joystick_read(int *horiz, int *vert)
+/*=======================================================================
+ * ACTIVE STATE FUNCTIONS
+ *======================================================================*/
+void init_active ( void )
 {
-  Wire.beginTransmission(JOYSTICK_ADDR);
-  Wire.write(0x03);
-  Wire.endTransmission();
-
-  Wire.requestFrom(JOYSTICK_ADDR,4);
-  if (Wire.available()==4)
-  {
-    // only using the msb for horizontal and vertical
-    *horiz = Wire.read();
-    Wire.read();
-    *vert = Wire.read();
-    Wire.read();
-    return true;
-  }
-  else
-  {
-    Serial.println("wire setup read failed");
-    return false;
-  }
+  digitalWrite(LED_PIN_ACTIVE, HIGH);  
 }
 
-
-
-#define MAX_JOYSTICK_VALUE 255
-#define JOYSTICK_BUFFER 20
-
-joystick_position_type map_joystick(int value)
-{
-  if (value < JOYSTICK_BUFFER) return JOYSTICK_LOW;
-  if (value < (MAX_JOYSTICK_VALUE - JOYSTICK_BUFFER)) return JOYSTICK_MID;
-  return JOYSTICK_HIGH;
-}
-
-state_type process_joystick( void )
+/*=======================================================================
+ * process_active
+ * 
+ * This is the main processing function for active state.  In here, we
+ * look for direction changes on our joystick and publish them through MQTT
+ */
+state_type process_active( void )
 {
   int x;
   int y;
@@ -634,11 +773,17 @@ state_type process_joystick( void )
   return STATE_ACTIVE;
 }
 
-
+/*==============================================================
+ * JOYSTICK_TEST STATE
+ * 
+ * This state MUST be enabled at compile time by changing the default state
+ * in "loop" below to "STATE_JOYSTICK_TEST".  It's used as a HW debug where
+ * we periodically read the joystick and publish our x & y values.
+ ================================================================*/
 state_type joystick_test( void )
 {
-  int x;
-  int y;
+  int x=-1;
+  int y=-1;
   static joystick_position_type last_vert=JOYSTICK_MID;
   static joystick_position_type last_horiz=JOYSTICK_MID;
   joystick_position_type curr_vert;
@@ -646,25 +791,24 @@ state_type joystick_test( void )
 
 
   digitalWrite(LED_PIN_ACTIVE, HIGH);
-  
-  // Okay, we have a snafu.  The joystick is mounted in the case such that the y direction is horizontal
-  // and the x direction is vertical.  
+   
   joystick_read(&x,&y);
-  curr_horiz = map_joystick(y);
-  curr_vert = map_joystick(x);
-
-
+  
   Serial.print("x: ");
   Serial.print(x);
   Serial.print(" y: ");
   Serial.println(y);
-
+  
   delay(1000);
   
   return STATE_JOYSTICK_TEST;
 }
 
-// This is a quick power-up LED test 
+/*==============================================================
+ * LED TEST
+ * 
+ * This is a uick power-up LED test.
+ *================================================================*/
 void led_test(void)
 {
   int led_delay_ms = 250; 
@@ -693,6 +837,10 @@ void led_test(void)
 
 }
 
+/*==============================================================
+ * SETUP
+ ================================================================*/
+
 void setup( void ) 
 {
   pinMode(LED_PIN_POWER, OUTPUT);
@@ -711,7 +859,7 @@ void setup( void )
 
   led_test();
   
-  Serial.println("Initializing 8266 MQTT Joystick");
+  Serial.println("\nInitializing 8266 MQTT Joystick");
   Serial.print("Client id: ");
   Serial.println(nv_data.client_id);
   Serial.print("Broker addr: ");
@@ -720,9 +868,12 @@ void setup( void )
 
 }
 
+/*==============================================================
+ * LOOP
+ ================================================================*/
 void loop()
 {
-  static state_type current_state=STATE_JOYSTICK_TEST;  
+  static state_type current_state=STATE_DISCONNECT;  
 
   switch (current_state)
   {
@@ -734,10 +885,9 @@ void loop()
       
       // any serial input will kick us to offline.
       if (Serial.available())
-      {
-        // no led update needed here.
-        
+      { 
         Serial.println("Going to offline state...");
+        init_offline_state();
         current_state = STATE_OFFLINE;
       }
       else
@@ -750,9 +900,8 @@ void loop()
       
       if (Serial.available())
       {
-        digitalWrite(LED_PIN_WIFI, LOW);
-        
         Serial.println("Going to offline state....");
+        init_offline_state();
         current_state = STATE_OFFLINE;
       }
       else
@@ -769,11 +918,9 @@ void loop()
       client.loop();
       
       if (Serial.available())
-      {
-        digitalWrite(LED_PIN_WIFI, LOW);
-        digitalWrite(LED_PIN_BROKER, LOW);
-        
+      { 
         Serial.println("Going to offline state....");
+        init_offline_state();
         current_state = STATE_OFFLINE;
       }
       else
@@ -784,17 +931,14 @@ void loop()
 
     case STATE_ACTIVE:
       if (Serial.available())
-      {
-        digitalWrite(LED_PIN_WIFI, LOW);
-        digitalWrite(LED_PIN_BROKER, LOW);
-        digitalWrite(LED_PIN_ACTIVE, LOW);
-        
+      { 
         Serial.println("Going to offline state....");
+        init_offline_state();
         current_state = STATE_OFFLINE;
       }
       else
       {
-        current_state = process_joystick();
+        current_state = process_active();
       }
 
     break;
