@@ -656,6 +656,20 @@ state_type process_looking_for_broker( void )
  *   https://github.com/gsalaman/mqtt_gamepad
  *======================================================================*/
 
+/*===========================================
+ * send_registration_request
+ * 
+ * Helper function to publish the request.
+ */
+void send_registration_request( void )
+{ 
+    client.publish("register/request", nv_data.client_id);
+  
+    Serial.print("Registering client ");
+    Serial.println(nv_data.client_id);
+  
+}
+
 /*============================================
  * init_registering_with_game
  * 
@@ -670,11 +684,7 @@ void init_registering_with_game( void )
     Serial.print("Subscribing to ");
     Serial.println(subscribe_str);  
     client.subscribe(subscribe_str);
-    
-    client.publish("register/request", nv_data.client_id);
-  
-    Serial.print("Registering client ");
-    Serial.println(nv_data.client_id);
+
 }
 
 /*============================================
@@ -683,8 +693,20 @@ void init_registering_with_game( void )
  * This function looks for the registration_complete indicator
  * (set by the MQTT callback)
  */
+#define REGISTRATION_RESEND_MS 5000 
 state_type process_registering_with_game( void )
 {
+  static unsigned long last_sent_time=0;
+  unsigned long curr_time;
+
+  // Is it time to resend a registration?
+  curr_time = millis();
+  if (curr_time > last_sent_time + REGISTRATION_RESEND_MS)
+  {
+    send_registration_request();
+    last_sent_time = curr_time;
+  }
+  
   if (registration_complete) 
   {
     Serial.println("Registration Complete!!!");
@@ -695,6 +717,14 @@ state_type process_registering_with_game( void )
   }
   else
   {
+    // Is it time to resend a registration?
+    curr_time = millis();
+    if (curr_time > last_sent_time + REGISTRATION_RESEND_MS)
+    {
+      send_registration_request();
+      last_sent_time = curr_time;
+    }
+    
     return STATE_REGISTERING_WITH_GAME;
   }
 }
