@@ -488,6 +488,7 @@ void print_offline_menu( void )
   Serial.println("3....set MQTT Broker");
   Serial.println("4....set MQTT Client Name");
   Serial.println("5....exit offline mode");
+  Serial.println("6....run joystick test");
 }
 
 /*=============================================================
@@ -557,6 +558,9 @@ state_type process_offline_state( void )
       case 5:
         init_disconnect_state();
         return STATE_DISCONNECT;
+
+      case 6:
+        return STATE_JOYSTICK_TEST;
         
       default:
         Serial.println("Unknown command");
@@ -732,7 +736,6 @@ state_type process_registering_with_game( void )
   static unsigned long last_sent_time=0;
   unsigned long curr_time;
 
-
   // first, check to see if we need to go to offline state
   if (check_for_offline_transitions()) return STATE_OFFLINE;
 
@@ -850,8 +853,7 @@ state_type process_active( void )
 /*==============================================================
  * JOYSTICK_TEST STATE
  * 
- * This state MUST be enabled at compile time by changing the default state
- * in "loop" below to "STATE_JOYSTICK_TEST".  It's used as a HW debug where
+ * This state is used as a HW debug where
  * we periodically read the joystick and publish our x & y values.
  ================================================================*/
 state_type joystick_test( void )
