@@ -21,6 +21,7 @@ MQTT joystick on 8266 thing.
 #define PLAYER_MAX_LEN 10
 char player[PLAYER_MAX_LEN];
 volatile bool registration_complete = false;
+volatile bool game_exit=false;
 
 WiFiClient wclient;
 PubSubClient client(wclient); // Setup MQTT client
@@ -164,7 +165,23 @@ joystick_position_type map_joystick(int value)
  */
 void mqtt_callback(char* topic, byte* payload, unsigned int length) 
 {
-
+  char game_state_topic[]="game_state";
+  
+  Serial.print("MQTT callback:  topic = ");
+  Serial.println(topic);
+  
+  /* is this a game_state topic? */
+  
+  if (!strncmp(topic, game_state_topic, sizeof(game_state_topic)))
+  {
+    /* Only one game state message we're processing right now.  Assume it's an exit */
+    Serial.println("received game_state exit");
+    game_exit = true; 
+    return;
+  }
+  
+  /* if we got here, it must have been a registration response.  */
+  
   if (length > PLAYER_MAX_LEN) 
   {
     Serial.println("player length too long!!!");
@@ -722,6 +739,7 @@ void send_registration_request( void )
  * 
  * Start the registration process by publishing our client ID.
  * The response will be processed async by the mqtt callback.
+ * We also need to register for the game_state message to detect exits.
  */
 void init_registering_with_game( void )
 {
@@ -731,6 +749,8 @@ void init_registering_with_game( void )
     Serial.print("Subscribing to ");
     Serial.println(subscribe_str);  
     client.subscribe(subscribe_str);
+
+    client.subscribe("game_state");
 
 }
 
@@ -751,9 +771,20 @@ state_type process_registering_with_game( void )
 
   // Need to call client.loop() to allow the callback to do it's thing.
   client.loop();
-  
+
   // Is it time to resend a registration?
   curr_time = millis();
+  if (game_exit)
+  {
+    /* If we exit the game from active, we don't actually send the registration...and we
+     *  want to wait a little bit before doing so.  By setting last_sent_time to curr_time, 
+     *  we'll delay the appropriate REGISTRATION_RESEND_MS time.
+     */
+    last_sent_time = curr_time;
+    game_exit = false;
+    registration_complete = false;
+  }
+  
   if (curr_time > last_sent_time + REGISTRATION_RESEND_MS)
   {
     send_registration_request();
@@ -808,6 +839,13 @@ state_type process_active( void )
 
   // first, check to see if we need to go to offline state
   if (check_for_offline_transitions()) return STATE_OFFLINE;
+
+  // next, check and see if we need to exit active.
+  if (game_exit)
+  {
+    digitalWrite(LED_PIN_ACTIVE, LOW);
+    return STATE_REGISTERING_WITH_GAME;
+  }
    
   joystick_read(&x,&y);
 
